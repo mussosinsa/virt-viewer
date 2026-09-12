@@ -103,6 +103,7 @@ static void virt_viewer_app_update_menu_displays(VirtViewerApp *self);
 static void virt_viewer_update_smartcard_accels(VirtViewerApp *self);
 static void virt_viewer_update_usbredir_accels(VirtViewerApp *self);
 static void virt_viewer_app_add_option_entries(VirtViewerApp *self, GOptionContext *context, GOptionGroup *group);
+static gboolean opt_secure_display;
 static VirtViewerWindow *virt_viewer_app_get_nth_window(VirtViewerApp *self, gint nth);
 static VirtViewerWindow *virt_viewer_app_get_vte_window(VirtViewerApp *self, const gchar *name);
 static void virt_viewer_app_set_actions_sensitive(VirtViewerApp *self);
@@ -1158,6 +1159,7 @@ virt_viewer_app_window_new(VirtViewerApp *self, gint nth)
 
     window = g_object_new(VIRT_VIEWER_TYPE_WINDOW, "app", self, NULL);
     virt_viewer_window_set_kiosk(window, priv->kiosk);
+    virt_viewer_window_set_secure_display(window, opt_secure_display);
     if (priv->main_window)
         virt_viewer_window_set_zoom_level(window, virt_viewer_window_get_zoom_level(priv->main_window));
 
@@ -3569,6 +3571,8 @@ virt_viewer_app_add_option_entries(G_GNUC_UNUSED VirtViewerApp *self,
           N_("Enable kiosk mode"), NULL },
         { "kiosk-quit", '\0', 0, G_OPTION_ARG_CALLBACK, option_kiosk_quit,
           N_("Quit on given condition in kiosk mode"), N_("<never|on-disconnect>") },
+        { "secure-display", '\0', 0, G_OPTION_ARG_NONE, &opt_secure_display,
+          N_("Prevent capture of active guest display windows (Windows only)"), NULL },
         { "verbose", 'v', 0, G_OPTION_ARG_NONE, &opt_verbose,
           N_("Display verbose information"), NULL },
         { "debug", '\0', 0, G_OPTION_ARG_NONE, &opt_debug,
