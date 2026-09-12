@@ -112,4 +112,6 @@ if with_msi
     ],
   )
 
+  alias_target('msi', msi)
+
 endif

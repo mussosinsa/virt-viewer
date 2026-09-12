@@ -36,4 +36,7 @@ Bug reports / support questions should be submitted to
 Code contributions should be submitted as merge requests to
 
   https://gitlab.com/virt-viewer/virt-viewer/-/merge_requests
+
+Windows MSI cross-compilation and packaging instructions are available in
+[`docs/windows-msi.md`](docs/windows-msi.md).
 # virt-viewer
