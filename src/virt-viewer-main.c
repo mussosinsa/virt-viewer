@@ -35,7 +35,7 @@ int main(int argc, char **argv)
     int ret = 1;
     GApplication *app= NULL;
 
-    virt_viewer_util_init(_("Virt Viewer"));
+    virt_viewer_util_init("ovworksViewer");
     app = G_APPLICATION(virt_viewer_new());
 
     ret = g_application_run(app, argc, argv);
