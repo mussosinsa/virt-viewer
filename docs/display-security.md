@@ -13,6 +13,12 @@ The viewer also avoids writing individual key symbols to its debug log. The
 SPICE and VNC keyboard grabs continue to route focused keyboard input to the
 guest.
 
+On Windows, a guest display is replaced with a blocking message while Windows
+reports that the process is running in a Remote Desktop Services session
+(`SM_REMOTESESSION`). Keystrokes received in that state are not forwarded to
+the guest. The viewer restores the guest display after the process returns to a
+local console session.
+
 ## Remote desktop and remote-support software
 
 `SetWindowDisplayAffinity` is not a DRM or data-loss-prevention boundary. It is
@@ -21,14 +27,18 @@ window. It does not provide a contract that every display driver, mirror
 driver, service, privileged process, or third-party capture implementation will
 honor the request.
 
-Consequently, capture blocking **cannot be guaranteed** after connecting with
-Microsoft Remote Desktop, TeamViewer, or similar remote-support products:
+The viewer therefore blocks its guest page in a standard Microsoft Remote
+Desktop session instead of relying on capture affinity there. Capture blocking
+still **cannot be guaranteed** with TeamViewer or similar remote-support tools,
+which normally operate in the console session and are not identified by
+`SM_REMOTESESSION`:
 
 | Capture path | Expected result | Security guarantee |
 | --- | --- | --- |
 | Virt-viewer's screenshot action | Disabled while the guest display is ready | Enforced by this application |
 | Windows Snipping Tool / Windows Graphics Capture | Viewer should be omitted on supported Windows versions | Subject to Windows version and composition state |
-| Microsoft Remote Desktop | May be blank or omitted, but behavior can vary by host/session configuration | Not guaranteed |
+| Standard Microsoft Remote Desktop session | Guest page and guest key forwarding are blocked | Enforced when Windows reports `SM_REMOTESESSION` |
+| RDP shadowing or another mode not reported as a remote session | Depends on capture affinity | Not guaranteed |
 | TeamViewer and similar tools | May be blank or omitted if the tool honors Windows affinity | Not guaranteed |
 | Administrator/SYSTEM service, display or kernel driver | May capture the content | Not protected |
 | Camera, HDMI capture, or compromised host | Can capture the content | Not protected |
@@ -60,8 +70,9 @@ do not infer TeamViewer behavior from a successful local Snipping Tool test.
 
 1. Open a guest and wait until the guest framebuffer is visible.
 2. Test Print Screen, Snipping Tool, and Windows Graphics Capture locally.
-3. Connect with Microsoft Remote Desktop and repeat the capture tests from both
-   the RDP client and host session.
+3. Connect with Microsoft Remote Desktop and confirm that the viewer replaces
+   the guest page with its remote-session blocking message and does not forward
+   keys to the guest.
 4. Connect with the exact deployed TeamViewer version and repeat the tests,
    including any session-recording feature.
 5. Disconnect the guest and confirm that connection/authentication windows are

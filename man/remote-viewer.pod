@@ -425,6 +425,10 @@ While a guest display is ready, the built-in screenshot action is disabled. On
 Windows, the guest viewer window also requests operating-system capture
 exclusion. Connection and authentication windows are not excluded.
 
+On Windows, the guest display and guest key forwarding are blocked while
+Windows reports a standard Remote Desktop Services session. This does not
+identify console-sharing products such as TeamViewer.
+
 Virt Viewer does not record key symbols in debug logs. Its keyboard grab routes
 input to the guest but cannot prevent privileged, kernel-level, or external
 keyloggers. Capture exclusion likewise cannot prevent cameras or privileged

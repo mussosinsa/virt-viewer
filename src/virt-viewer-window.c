@@ -1540,6 +1540,13 @@ window_key_pressed (GtkWidget *widget G_GNUC_UNUSED,
     display = self->display;
     event = (GdkEventKey *)ev;
 
+#ifdef G_OS_WIN32
+    /* Do not forward remote-desktop keystrokes to a guest whose framebuffer
+     * is deliberately concealed by VirtViewerNotebook. */
+    if (GetSystemMetrics(SM_REMOTESESSION) != 0)
+        return FALSE;
+#endif
+
     gtk_widget_grab_focus(GTK_WIDGET(display));
 
     // Look through keymaps - if set for mappings and intercept
