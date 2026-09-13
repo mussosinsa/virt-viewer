@@ -98,7 +98,6 @@ struct _VirtViewerWindow {
     gint fullscreen_monitor;
     gboolean desktop_resize_pending;
     gboolean kiosk;
-    gboolean secure_display;
     gboolean capture_exclusion_applied;
 
     gint zoomlevel;
@@ -129,7 +128,7 @@ virt_viewer_window_update_capture_exclusion(VirtViewerWindow *self)
     if (!gtk_widget_get_realized(self->window))
         return;
 
-    exclude = self->secure_display && virt_viewer_window_display_is_ready(self);
+    exclude = virt_viewer_window_display_is_ready(self);
     if (exclude == self->capture_exclusion_applied)
         return;
 
@@ -153,7 +152,7 @@ virt_viewer_window_update_capture_exclusion(VirtViewerWindow *self)
     }
     self->capture_exclusion_applied = exclude;
 #else
-    if (self->secure_display && virt_viewer_window_display_is_ready(self))
+    if (virt_viewer_window_display_is_ready(self))
         g_debug("Display capture exclusion is not supported on this platform");
 #endif
 }
@@ -1155,7 +1154,7 @@ virt_viewer_window_screenshot(VirtViewerWindow *self)
 
     g_return_if_fail(VIRT_VIEWER_IS_WINDOW(self));
 
-    if (self->secure_display)
+    if (virt_viewer_window_display_is_ready(self))
         return;
 
     g_return_if_fail(self->display != NULL);
@@ -1488,9 +1487,7 @@ virt_viewer_window_set_actions_sensitive(VirtViewerWindow *self, gboolean sensit
 
     action = g_action_map_lookup_action(map, "screenshot");
     g_simple_action_set_enabled(G_SIMPLE_ACTION(action),
-                                sensitive &&
-                                !self->secure_display &&
-                                VIRT_VIEWER_DISPLAY_CAN_SCREENSHOT(self->display));
+                                FALSE);
 
     action = g_action_map_lookup_action(map, "zoom-in");
     g_simple_action_set_enabled(G_SIMPLE_ACTION(action), sensitive);
@@ -1527,8 +1524,7 @@ display_show_hint(VirtViewerDisplay *display,
 
     map = G_ACTION_MAP(self->window);
     action = g_action_map_lookup_action(map, "screenshot");
-    g_simple_action_set_enabled(G_SIMPLE_ACTION(action),
-                                hint && !self->secure_display);
+    g_simple_action_set_enabled(G_SIMPLE_ACTION(action), FALSE);
 
     virt_viewer_window_update_capture_exclusion(self);
 }
@@ -1564,9 +1560,7 @@ window_key_pressed (GtkWidget *widget G_GNUC_UNUSED,
         if (matched) {
                 if (matched->mappedKeys == NULL) {
                         // Key to be ignored and not pass through to VM
-                        g_debug("Blocking keypress '%s'", gdk_keyval_name(matched->sourceKey));
                 } else {
-                        g_debug("Sending through mapped keys");
                         virt_viewer_display_send_keys(display,
                                 matched->mappedKeys, matched->numMappedKeys);
                 }
@@ -1574,7 +1568,6 @@ window_key_pressed (GtkWidget *widget G_GNUC_UNUSED,
         }
 
     }
-    g_debug("Key pressed was keycode='0x%x', gdk_keyname='%s'", event->keyval, gdk_keyval_name(event->keyval));
     return gtk_widget_event(GTK_WIDGET(display), ev);
 }
 
@@ -1760,22 +1753,6 @@ virt_viewer_window_set_kiosk(VirtViewerWindow *self, gboolean enabled)
         virt_viewer_window_enable_kiosk(self);
     else
         g_debug("disabling kiosk not implemented yet");
-}
-
-void
-virt_viewer_window_set_secure_display(VirtViewerWindow *self, gboolean enabled)
-{
-    GAction *action;
-
-    g_return_if_fail(VIRT_VIEWER_IS_WINDOW(self));
-
-    self->secure_display = enabled;
-    action = g_action_map_lookup_action(G_ACTION_MAP(self->window), "screenshot");
-    g_simple_action_set_enabled(G_SIMPLE_ACTION(action),
-                                !enabled &&
-                                virt_viewer_window_display_is_ready(self) &&
-                                VIRT_VIEWER_DISPLAY_CAN_SCREENSHOT(self->display));
-    virt_viewer_window_update_capture_exclusion(self);
 }
 
 static void

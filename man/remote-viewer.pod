@@ -114,11 +114,6 @@ Remap and/or block supplied keypresses to the host. All key identifiers are
 case-sensitive and follow the naming convention as defined in gdkkeysyms.h
 without the GDK_KEY_ prefix.
 
-Running the application with --debug will display keypress symbols in the
-following way:
-  "Key pressed was keycode='0x63', gdk_keyname='c'"
-  "Key pressed was keycode='0xffeb', gdk_keyname='Super_L'"
-
 The format for supplying a keymap is:
 <srcKeySym1>=[<destKeySym1>][+<destKeySym2][,<srckeySym2>=[<destKeySym1]
 
@@ -142,14 +137,6 @@ kiosk system must have additional configuration and security settings
 to lock down the OS. In particular, you must configure or disable the
 window manager, limit the session capabilities, use some
 restart/watchdog mechanism, disable VT switching etc.
-
-=item --secure-display
-
-Disable the built-in screenshot action. On Windows, guest display windows are
-also excluded from operating-system capture while a guest display is ready.
-Connection and authentication windows are not excluded. This option cannot
-protect against privileged capture software, cameras, or keyloggers; use a
-trusted host and operating-system security controls for those threats.
 
 =item --kiosk-quit <never|on-disconnect>
 
@@ -431,6 +418,18 @@ for displays 1 and 2 are not specified.
 
 Configuration key B<share-clipboard> contains a boolean value. If it's "true",
 then clipboard is shared with guests if clipboard sharing is supported by used protocol.
+
+=head1 DISPLAY AND INPUT SECURITY
+
+While a guest display is ready, the built-in screenshot action is disabled. On
+Windows, the guest viewer window also requests operating-system capture
+exclusion. Connection and authentication windows are not excluded.
+
+Virt Viewer does not record key symbols in debug logs. Its keyboard grab routes
+input to the guest but cannot prevent privileged, kernel-level, or external
+keyloggers. Capture exclusion likewise cannot prevent cameras or privileged
+capture software. A trusted and appropriately locked-down host is required for
+protection against those threats.
 
 =head1 EXAMPLES
 
