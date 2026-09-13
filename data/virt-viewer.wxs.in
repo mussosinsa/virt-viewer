@@ -34,7 +34,7 @@
 
   <?define UpgradeCode = "5B027138-1A63-49E6-877E-055E5EEC1903"?>
   <Product Id="*"
-           Name="VirtViewer @VERSION@@BUILDID@ ($(var.ArchString))"
+           Name="ovworksViewer @VERSION@@BUILDID@ ($(var.ArchString))"
            Manufacturer="$(env.MANUFACTURER)"
            Version="$(var.Version)"
            UpgradeCode="$(var.UpgradeCode)"
@@ -52,11 +52,11 @@
       <UpgradeVersion Minimum="$(var.Version)" OnlyDetect="yes" Property="NEWERVERSIONDETECTED"/>
       <UpgradeVersion Minimum="0.0.0" Maximum="$(var.Version)" IncludeMinimum="yes" IncludeMaximum="no" Property="OLDERVERSIONBEINGUPGRADED"/>
     </Upgrade>
-    <Condition Message="VirtViewer is already installed.">NOT NEWERVERSIONDETECTED</Condition>
+    <Condition Message="ovworksViewer is already installed.">NOT NEWERVERSIONDETECTED</Condition>
 
     <DirectoryRef Id="TARGETDIR">
       <Component Id="CProgIds" Guid="89D6F46D-9C5E-4D65-8456-58FC361E553E">
-        <ProgId Id='VirtViewer.vvfile' Description='VirtViewer connection file'>
+        <ProgId Id='VirtViewer.vvfile' Description='ovworksViewer connection file'>
           <Extension Id='vv' ContentType='application/x-virt-viewer'>
             <Verb Id='open' Command='Open' TargetFile='fil610DF9E49759B1DEC646290195F96F8A' Argument='"%1"' />
             <MIME ContentType="application/x-virt-viewer" Default="yes"/>
@@ -67,14 +67,14 @@
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="$(var.ArchProgramFilesFolder)">
-        <Directory Id="INSTALLDIR" Name="VirtViewer v@VERSION@@BUILDID@">
+        <Directory Id="INSTALLDIR" Name="ovworksViewer v@VERSION@@BUILDID@">
           <Component Id="CBuildEnvFile" Guid="*">
             <File Id="filA1E799D196006E6DF67DACE15B8C6193" KeyPath="yes" Source="buildenv.txt"/>
           </Component>
         </Directory>
       </Directory>
       <Directory Id="ProgramMenuFolder">
-        <Directory Id="MENUDIR" Name="VirtViewer"/>
+        <Directory Id="MENUDIR" Name="ovworksViewer"/>
       </Directory>
     </Directory>
 
@@ -91,7 +91,7 @@
     <DirectoryRef Id="MENUDIR">
       <Component Id="CShortcut" Guid="*">
         <Shortcut Id="ApplicationStartMenuShortcut"
-                  Name="Remote viewer"
+                  Name="ovworksViewer"
                   Description="A SPICE/VNC client"
                   Target="[INSTALLDIR]\bin\remote-viewer.exe"
                   Icon="virt-viewer.ico"/>
