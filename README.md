@@ -39,4 +39,6 @@ Code contributions should be submitted as merge requests to
 
 Windows MSI cross-compilation and packaging instructions are available in
 [`docs/windows-msi.md`](docs/windows-msi.md).
+The capture-protection threat model, including remote-desktop limitations, is
+documented in [`docs/display-security.md`](docs/display-security.md).
 # virt-viewer
