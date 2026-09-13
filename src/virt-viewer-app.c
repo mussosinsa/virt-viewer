@@ -1159,7 +1159,8 @@ virt_viewer_app_window_new(VirtViewerApp *self, gint nth)
 
     window = g_object_new(VIRT_VIEWER_TYPE_WINDOW, "app", self, NULL);
     virt_viewer_window_set_kiosk(window, priv->kiosk);
-    virt_viewer_window_set_secure_display(window, opt_secure_display);
+    if (opt_secure_display)
+        virt_viewer_window_set_secure_display(window, TRUE);
     if (priv->main_window)
         virt_viewer_window_set_zoom_level(window, virt_viewer_window_get_zoom_level(priv->main_window));
 

@@ -99,6 +99,7 @@ struct _VirtViewerWindow {
     gboolean desktop_resize_pending;
     gboolean kiosk;
     gboolean secure_display;
+    gboolean capture_exclusion_applied;
 
     gint zoomlevel;
     gboolean fullscreen;
@@ -123,24 +124,34 @@ virt_viewer_window_update_capture_exclusion(VirtViewerWindow *self)
 #ifdef G_OS_WIN32
     GdkWindow *gdk_window;
     DWORD affinity;
+    gboolean exclude;
 
     if (!gtk_widget_get_realized(self->window))
+        return;
+
+    exclude = self->secure_display && virt_viewer_window_display_is_ready(self);
+    if (exclude == self->capture_exclusion_applied)
         return;
 
     gdk_window = gtk_widget_get_window(self->window);
     if (!GDK_IS_WIN32_WINDOW(gdk_window))
         return;
 
-    affinity = self->secure_display && virt_viewer_window_display_is_ready(self) ?
-        WDA_EXCLUDEFROMCAPTURE : WDA_NONE;
+    affinity = exclude ? WDA_EXCLUDEFROMCAPTURE : WDA_NONE;
     if (!SetWindowDisplayAffinity(GDK_WINDOW_HWND(gdk_window), affinity)) {
         /* WDA_EXCLUDEFROMCAPTURE was added after WDA_MONITOR. Older Windows
          * versions can still replace this window with a blank image. */
-        if (affinity != WDA_EXCLUDEFROMCAPTURE ||
-            !SetWindowDisplayAffinity(GDK_WINDOW_HWND(gdk_window), WDA_MONITOR))
-            g_warning("Unable to update display capture exclusion: %lu",
-                      (unsigned long)GetLastError());
+        if (!exclude ||
+            !SetWindowDisplayAffinity(GDK_WINDOW_HWND(gdk_window), WDA_MONITOR)) {
+            /* Capture protection is best-effort. In particular it may be
+             * rejected in remote sessions; never terminate the viewer for
+             * that optional OS integration. */
+            g_debug("Unable to update display capture exclusion: %lu",
+                    (unsigned long)GetLastError());
+            return;
+        }
     }
+    self->capture_exclusion_applied = exclude;
 #else
     if (self->secure_display && virt_viewer_window_display_is_ready(self))
         g_debug("Display capture exclusion is not supported on this platform");
