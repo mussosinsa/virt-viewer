@@ -61,6 +61,39 @@ DESTDIR="$DESTDIR" ninja -C build-win64 msi
 The resulting file is placed under `build-win64/data/` and is named like
 `virt-viewer-x64-11.0.msi`.
 
+### Customizing the MSI file name
+
+Set `msi-name` during initial configuration to change only the MSI output file's
+base name. For example, the following produces
+`build-win64/data/ovworks-viewer-x64-11.0.msi`:
+
+```sh
+meson setup build-win64 \
+  --cross-file=/usr/share/mingw/toolchain-mingw64.meson \
+  --prefix=/usr/x86_64-w64-mingw32/sys-root/mingw \
+  -Dbuild-id=1 \
+  -Dmsi-name=ovworks-viewer
+ninja -C build-win64
+
+export DESTDIR="$PWD/build-win64/stage"
+rm -rf "$DESTDIR"
+DESTDIR="$DESTDIR" ninja -C build-win64 install
+DESTDIR="$DESTDIR" ninja -C build-win64 msi
+```
+
+For an existing configured build directory, update the option and rebuild the
+MSI instead:
+
+```sh
+meson configure build-win64 -Dmsi-name=ovworks-viewer
+DESTDIR="$PWD/build-win64/stage" ninja -C build-win64 msi
+```
+
+This setting changes the output file name only. It does not change the MSI
+product name, installation directory, executable names, icons, or publisher.
+Those values are defined separately in `data/virt-viewer.wxs.in` and the Windows
+resource files.
+
 To build a 32-bit installer instead, use
 `/usr/share/mingw/toolchain-mingw32.meson`, the prefix
 `/usr/i686-w64-mingw32/sys-root/mingw`, and a separate build directory. Its

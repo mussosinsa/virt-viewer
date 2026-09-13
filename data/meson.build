@@ -57,7 +57,11 @@ if with_msi
     ],
     capture: true)
 
-  msi_filename = 'virt-viewer-@0@-@1@.msi'.format(wixl_arch, meson.project_version())
+  msi_filename = '@0@-@1@-@2@.msi'.format(
+    get_option('msi-name'),
+    wixl_arch,
+    meson.project_version(),
+  )
 
   if libvirt_dep.found()
     wixl_libvirt_arg = 'True'
