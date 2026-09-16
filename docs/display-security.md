@@ -47,6 +47,25 @@ The same limitation applies to keylogging. A GTK/SPICE/VNC keyboard grab
 controls event routing; it cannot stop an administrator-level hook, service,
 filter driver, kernel component, hardware keylogger, or compromised input DLL.
 
+## Anti-keylogging assessment
+
+Virt-viewer does **not** implement a general anti-keylogger. The protections in
+this tree have the following narrower scope:
+
+| Control | Status |
+| --- | --- |
+| Do not write pressed key values or symbols to virt-viewer logs | Implemented and covered by `test-input-privacy` |
+| Do not forward keys to a concealed guest in a standard Windows RDP session | Implemented |
+| Route focused input directly to the SPICE/VNC guest | Implemented by the existing keyboard grab |
+| Prevent another user-mode process from installing a keyboard hook | Not implemented; requires endpoint policy and process isolation |
+| Prevent administrator, SYSTEM, driver, kernel, DLL-injection, or hardware logging | Not possible from this application |
+
+Using a low-level keyboard hook, Raw Input, or a global input block inside the
+viewer would not create a security boundary: privileged software can observe
+input before or below the viewer, and global blocking would also harm local
+accessibility and recovery. Do not describe or certify the viewer itself as an
+anti-keylogging product.
+
 ## Deployment guidance
 
 If remote-session capture must be prevented rather than merely discouraged,
