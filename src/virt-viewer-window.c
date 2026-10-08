@@ -36,6 +36,14 @@
 #include <glib/gi18n.h>
 #include <math.h>
 
+#ifdef G_OS_WIN32
+#include <windows.h>
+#include <gdk/gdkwin32.h>
+#ifndef WDA_EXCLUDEFROMCAPTURE
+#define WDA_EXCLUDEFROMCAPTURE 0x00000011
+#endif
+#endif
+
 #include "virt-viewer-window.h"
 #include "virt-viewer-display.h"
 #include "virt-viewer-session.h"
@@ -90,6 +98,7 @@ struct _VirtViewerWindow {
     gint fullscreen_monitor;
     gboolean desktop_resize_pending;
     gboolean kiosk;
+    gboolean capture_exclusion_applied;
 
     gint zoomlevel;
     gboolean fullscreen;
@@ -97,6 +106,65 @@ struct _VirtViewerWindow {
     gboolean initial_zoom_set;
     VirtViewerKeyMapping *keyMappings;
 };
+
+static gboolean
+virt_viewer_window_display_is_ready(VirtViewerWindow *self)
+{
+    return self->display &&
+        (virt_viewer_display_get_show_hint(self->display) &
+         VIRT_VIEWER_DISPLAY_SHOW_HINT_READY);
+}
+
+/* Capture exclusion is a native top-level window property. Apply it only
+ * while this window contains a ready guest display. */
+static void
+virt_viewer_window_update_capture_exclusion(VirtViewerWindow *self)
+{
+#ifdef G_OS_WIN32
+    GdkWindow *gdk_window;
+    DWORD affinity;
+    gboolean exclude;
+
+    if (!gtk_widget_get_realized(self->window))
+        return;
+
+    exclude = virt_viewer_window_display_is_ready(self);
+    if (exclude == self->capture_exclusion_applied)
+        return;
+
+    gdk_window = gtk_widget_get_window(self->window);
+    if (!GDK_IS_WIN32_WINDOW(gdk_window))
+        return;
+
+    affinity = exclude ? WDA_EXCLUDEFROMCAPTURE : WDA_NONE;
+    if (!SetWindowDisplayAffinity(GDK_WINDOW_HWND(gdk_window), affinity)) {
+        /* WDA_EXCLUDEFROMCAPTURE was added after WDA_MONITOR. Older Windows
+         * versions can still replace this window with a blank image. */
+        if (!exclude ||
+            !SetWindowDisplayAffinity(GDK_WINDOW_HWND(gdk_window), WDA_MONITOR)) {
+            /* Capture protection is best-effort. In particular it may be
+             * rejected in remote sessions; never terminate the viewer for
+             * that optional OS integration. */
+            g_debug("Unable to update display capture exclusion: %lu",
+                    (unsigned long)GetLastError());
+            return;
+        }
+    }
+    self->capture_exclusion_applied = exclude;
+#else
+    if (virt_viewer_window_display_is_ready(self))
+        g_debug("Display capture exclusion is not supported on this platform");
+#endif
+}
+
+static gboolean
+virt_viewer_window_map_event(GtkWidget *widget G_GNUC_UNUSED,
+                             GdkEvent *event G_GNUC_UNUSED,
+                             VirtViewerWindow *self)
+{
+    virt_viewer_window_update_capture_exclusion(self);
+    return FALSE;
+}
 
 G_DEFINE_TYPE(VirtViewerWindow, virt_viewer_window, G_TYPE_OBJECT)
 
@@ -548,6 +616,8 @@ virt_viewer_window_init (VirtViewerWindow *self)
     gtk_overlay_add_overlay(GTK_OVERLAY(overlay), GTK_WIDGET(self->revealer));
 
     self->window = GTK_WIDGET(gtk_builder_get_object(self->builder, "viewer"));
+    g_signal_connect(self->window, "map-event",
+                     G_CALLBACK(virt_viewer_window_map_event), self);
 
     g_action_map_add_action_entries(G_ACTION_MAP(self->window), actions,
                                     G_N_ELEMENTS(actions), self);
@@ -1079,10 +1149,13 @@ virt_viewer_window_save_screenshot(VirtViewerWindow *self,
 void
 virt_viewer_window_screenshot(VirtViewerWindow *self)
 {
-    g_return_if_fail(VIRT_VIEWER_IS_WINDOW(self));
-
     GtkWidget *dialog;
     const char *image_dir;
+
+    g_return_if_fail(VIRT_VIEWER_IS_WINDOW(self));
+
+    if (virt_viewer_window_display_is_ready(self))
+        return;
 
     g_return_if_fail(self->display != NULL);
 
@@ -1414,8 +1487,7 @@ virt_viewer_window_set_actions_sensitive(VirtViewerWindow *self, gboolean sensit
 
     action = g_action_map_lookup_action(map, "screenshot");
     g_simple_action_set_enabled(G_SIMPLE_ACTION(action),
-                                sensitive &&
-                                VIRT_VIEWER_DISPLAY_CAN_SCREENSHOT(self->display));
+                                FALSE);
 
     action = g_action_map_lookup_action(map, "zoom-in");
     g_simple_action_set_enabled(G_SIMPLE_ACTION(action), sensitive);
@@ -1452,8 +1524,9 @@ display_show_hint(VirtViewerDisplay *display,
 
     map = G_ACTION_MAP(self->window);
     action = g_action_map_lookup_action(map, "screenshot");
-    g_simple_action_set_enabled(G_SIMPLE_ACTION(action),
-                                hint);
+    g_simple_action_set_enabled(G_SIMPLE_ACTION(action), FALSE);
+
+    virt_viewer_window_update_capture_exclusion(self);
 }
 
 
@@ -1466,6 +1539,13 @@ window_key_pressed (GtkWidget *widget G_GNUC_UNUSED,
     VirtViewerDisplay *display;
     display = self->display;
     event = (GdkEventKey *)ev;
+
+#ifdef G_OS_WIN32
+    /* Do not forward remote-desktop keystrokes to a guest whose framebuffer
+     * is deliberately concealed by VirtViewerNotebook. */
+    if (GetSystemMetrics(SM_REMOTESESSION) != 0)
+        return FALSE;
+#endif
 
     gtk_widget_grab_focus(GTK_WIDGET(display));
 
@@ -1487,9 +1567,7 @@ window_key_pressed (GtkWidget *widget G_GNUC_UNUSED,
         if (matched) {
                 if (matched->mappedKeys == NULL) {
                         // Key to be ignored and not pass through to VM
-                        g_debug("Blocking keypress '%s'", gdk_keyval_name(matched->sourceKey));
                 } else {
-                        g_debug("Sending through mapped keys");
                         virt_viewer_display_send_keys(display,
                                 matched->mappedKeys, matched->numMappedKeys);
                 }
@@ -1497,7 +1575,6 @@ window_key_pressed (GtkWidget *widget G_GNUC_UNUSED,
         }
 
     }
-    g_debug("Key pressed was keycode='0x%x', gdk_keyname='%s'", event->keyval, gdk_keyval_name(event->keyval));
     return gtk_widget_event(GTK_WIDGET(display), ev);
 }
 
@@ -1512,6 +1589,7 @@ virt_viewer_window_set_display(VirtViewerWindow *self, VirtViewerDisplay *displa
         gtk_notebook_remove_page(GTK_NOTEBOOK(self->notebook), 1);
         g_object_unref(self->display);
         self->display = NULL;
+        virt_viewer_window_update_capture_exclusion(self);
     }
 
     if (display != NULL) {
