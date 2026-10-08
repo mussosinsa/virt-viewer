@@ -8,6 +8,7 @@ option('vte', type: 'feature', value: 'auto', description: 'VTE support')
 
 option('build-id', type: 'string', value: '', description: 'Extra build ID string')
 option('os-id', type: 'string', value: '', description: 'Remote viewer OS-ID string')
+option('msi-name', type: 'string', value: 'virt-viewer', description: 'Base name of the Windows MSI output file')
 
 option('bash_completion', type: 'feature', value: 'auto', description: 'bash-completion support')
 option('bash_completion_dir', type: 'string', value: '', description: 'directory containing bash completion scripts')
