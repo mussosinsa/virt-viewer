@@ -26,9 +26,16 @@
 #include <glib.h>
 #include <glib/gi18n.h>
 #include <locale.h>
+#include <stdlib.h>
 
 #ifdef G_OS_WIN32
+#define CINTERFACE
+#define COBJMACROS
 #include <windows.h>
+#include <netfw.h>
+#include <objbase.h>
+#include <oleauto.h>
+#include <shellapi.h>
 #include <io.h>
 #endif
 
@@ -253,6 +260,306 @@ static void log_handler(const gchar *log_domain,
 }
 
 #ifdef G_OS_WIN32
+static gboolean remote_desktop_firewall_applied;
+static gboolean remote_desktop_service_disabled;
+/* mingw-w64's libuuid does not export the modern Windows Firewall GUIDs on
+ * every supported distribution. Keep private copies of the SDK-defined values
+ * so linking does not depend on those optional exports. */
+static const CLSID virt_viewer_clsid_net_fw_policy2 =
+    { 0xe2b3c97f, 0x6ae1, 0x41ac,
+      { 0x81, 0x7a, 0xf6, 0xf9, 0x21, 0x66, 0xd7, 0xdd } };
+static const IID virt_viewer_iid_net_fw_policy2 =
+    { 0x98325047, 0xc671, 0x4174,
+      { 0x8d, 0x81, 0xde, 0xfc, 0xd3, 0xf0, 0x31, 0x86 } };
+static const CLSID virt_viewer_clsid_net_fw_rule =
+    { 0x2c5bc43e, 0x3369, 0x4c33,
+      { 0xab, 0x0c, 0xbe, 0x94, 0x69, 0x67, 0x7a, 0xf4 } };
+static const IID virt_viewer_iid_net_fw_rule =
+    { 0xaf230d27, 0xbaba, 0x4e42,
+      { 0xac, 0xed, 0xf5, 0x24, 0xf2, 0x2c, 0xfc, 0xe2 } };
+static const gchar disable_remote_desktop_service[] =
+    "$ErrorActionPreference = 'Stop'; "
+    "Set-Service -Name TermService -StartupType Disabled; "
+    "Stop-Service -Name TermService -Force";
+static const gchar enable_remote_desktop_service[] =
+    "$ErrorActionPreference = 'Stop'; "
+    "Set-Service -Name TermService -StartupType Manual; "
+    "Start-Service -Name TermService";
+
+static gboolean
+virt_viewer_is_elevated(void)
+{
+    TOKEN_ELEVATION elevation;
+    DWORD size = 0;
+    HANDLE token = NULL;
+    gboolean elevated = FALSE;
+
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token) &&
+        GetTokenInformation(token, TokenElevation, &elevation,
+                            sizeof(elevation), &size))
+        elevated = elevation.TokenIsElevated != 0;
+
+    if (token != NULL)
+        CloseHandle(token);
+    return elevated;
+}
+
+static gboolean
+virt_viewer_relaunch_elevated(DWORD *windows_error)
+{
+    const DWORD executable_capacity = 32768;
+    wchar_t *executable = g_new(wchar_t, executable_capacity);
+    const wchar_t *parameters = GetCommandLineW();
+    SHELLEXECUTEINFOW execute_info = { 0, };
+    DWORD length;
+
+    length = GetModuleFileNameW(NULL, executable, executable_capacity);
+    if (length == 0 || length == executable_capacity) {
+        *windows_error = GetLastError();
+        g_free(executable);
+        return FALSE;
+    }
+
+    /* Preserve the original argument quoting by skipping only argv[0] in the
+     * raw command line instead of rebuilding all arguments. */
+    if (*parameters == L'"') {
+        parameters++;
+        while (*parameters != L'\0' && *parameters != L'"')
+            parameters++;
+        if (*parameters == L'"')
+            parameters++;
+    } else {
+        while (*parameters != L'\0' && *parameters != L' ' && *parameters != L'\t')
+            parameters++;
+    }
+    while (*parameters == L' ' || *parameters == L'\t')
+        parameters++;
+
+    execute_info.cbSize = sizeof(execute_info);
+    execute_info.fMask = SEE_MASK_NOASYNC;
+    execute_info.lpVerb = L"runas";
+    execute_info.lpFile = executable;
+    execute_info.lpParameters = *parameters != L'\0' ? parameters : NULL;
+    execute_info.nShow = SW_SHOWNORMAL;
+
+    if (!ShellExecuteExW(&execute_info)) {
+        *windows_error = GetLastError();
+        g_free(executable);
+        return FALSE;
+    }
+    g_free(executable);
+    return TRUE;
+}
+
+static HRESULT
+virt_viewer_firewall_add_rule(INetFwRules *rules,
+                              const wchar_t *name,
+                              NET_FW_IP_PROTOCOL protocol)
+{
+    INetFwRule *rule = NULL;
+    BSTR rule_name = SysAllocString(name);
+    BSTR local_ports = SysAllocString(L"3389");
+    HRESULT result;
+
+    if (rule_name == NULL || local_ports == NULL) {
+        result = E_OUTOFMEMORY;
+        goto cleanup;
+    }
+
+    /* Remove a stale application-owned rule before replacing it. */
+    INetFwRules_Remove(rules, rule_name);
+
+    result = CoCreateInstance(&virt_viewer_clsid_net_fw_rule, NULL,
+                              CLSCTX_INPROC_SERVER,
+                              &virt_viewer_iid_net_fw_rule, (void **)&rule);
+    if (FAILED(result))
+        goto cleanup;
+
+    if (FAILED(result = INetFwRule_put_Name(rule, rule_name)) ||
+        FAILED(result = INetFwRule_put_Protocol(rule, protocol)) ||
+        FAILED(result = INetFwRule_put_LocalPorts(rule, local_ports)) ||
+        FAILED(result = INetFwRule_put_Direction(rule, NET_FW_RULE_DIR_IN)) ||
+        FAILED(result = INetFwRule_put_Action(rule, NET_FW_ACTION_BLOCK)) ||
+        FAILED(result = INetFwRule_put_Profiles(rule, NET_FW_PROFILE2_ALL)) ||
+        FAILED(result = INetFwRule_put_Enabled(rule, VARIANT_TRUE)))
+        goto cleanup;
+
+    result = INetFwRules_Add(rules, rule);
+
+cleanup:
+    if (rule != NULL)
+        INetFwRule_Release(rule);
+    SysFreeString(local_ports);
+    SysFreeString(rule_name);
+    return result;
+}
+
+static gboolean
+virt_viewer_firewall_update_com(gboolean enable)
+{
+    INetFwPolicy2 *policy = NULL;
+    INetFwRules *rules = NULL;
+    BSTR tcp_name = NULL;
+    BSTR udp_name = NULL;
+    HRESULT initialized;
+    HRESULT result;
+    gboolean success = FALSE;
+
+    initialized = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    if (FAILED(initialized) && initialized != RPC_E_CHANGED_MODE)
+        return FALSE;
+
+    result = CoCreateInstance(&virt_viewer_clsid_net_fw_policy2, NULL,
+                              CLSCTX_INPROC_SERVER,
+                              &virt_viewer_iid_net_fw_policy2,
+                              (void **)&policy);
+    if (FAILED(result) ||
+        FAILED(result = INetFwPolicy2_get_Rules(policy, &rules)))
+        goto cleanup;
+
+    tcp_name = SysAllocString(L"ovworksViewer-RDP-TCP-Block");
+    udp_name = SysAllocString(L"ovworksViewer-RDP-UDP-Block");
+    if (tcp_name == NULL || udp_name == NULL)
+        goto cleanup;
+
+    if (enable) {
+        result = virt_viewer_firewall_add_rule(rules,
+                                               L"ovworksViewer-RDP-TCP-Block",
+                                               NET_FW_IP_PROTOCOL_TCP);
+        if (SUCCEEDED(result))
+            result = virt_viewer_firewall_add_rule(rules,
+                                                   L"ovworksViewer-RDP-UDP-Block",
+                                                   NET_FW_IP_PROTOCOL_UDP);
+        if (FAILED(result)) {
+            INetFwRules_Remove(rules, tcp_name);
+            INetFwRules_Remove(rules, udp_name);
+            goto cleanup;
+        }
+    } else {
+        HRESULT tcp_result = INetFwRules_Remove(rules, tcp_name);
+        HRESULT udp_result = INetFwRules_Remove(rules, udp_name);
+
+        /* Removing a missing rule is harmless for cleanup purposes, but an
+         * access or policy error must trigger the netsh fallback. */
+        if ((FAILED(tcp_result) &&
+             tcp_result != HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)) ||
+            (FAILED(udp_result) &&
+             udp_result != HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)))
+            goto cleanup;
+    }
+    success = TRUE;
+
+cleanup:
+    SysFreeString(udp_name);
+    SysFreeString(tcp_name);
+    if (rules != NULL)
+        INetFwRules_Release(rules);
+    if (policy != NULL)
+        INetFwPolicy2_Release(policy);
+    if (SUCCEEDED(initialized))
+        CoUninitialize();
+    return success;
+}
+
+static gboolean
+virt_viewer_run_netsh(const gchar *action, const gchar *protocol)
+{
+    gchar *name = g_strdup_printf("name=ovworksViewer-RDP-%s-Block", protocol);
+    gchar *protocol_arg = g_strdup_printf("protocol=%s", protocol);
+    gchar *argv_add[] = {
+        (gchar *)"netsh.exe", (gchar *)"advfirewall", (gchar *)"firewall",
+        (gchar *)"add", (gchar *)"rule", name, (gchar *)"dir=in",
+        (gchar *)"action=block", protocol_arg, (gchar *)"localport=3389",
+        (gchar *)"profile=any", (gchar *)"enable=yes", NULL,
+    };
+    gchar *argv_delete[] = {
+        (gchar *)"netsh.exe", (gchar *)"advfirewall", (gchar *)"firewall",
+        (gchar *)"delete", (gchar *)"rule", name, NULL,
+    };
+    gchar **argv = g_str_equal(action, "add") ? argv_add : argv_delete;
+    gint wait_status = 0;
+    gboolean success;
+
+    success = g_spawn_sync(NULL, argv, NULL,
+                           G_SPAWN_SEARCH_PATH |
+                           G_SPAWN_STDOUT_TO_DEV_NULL |
+                           G_SPAWN_STDERR_TO_DEV_NULL,
+                           NULL, NULL, NULL, NULL, &wait_status, NULL) &&
+        g_spawn_check_exit_status(wait_status, NULL);
+    g_free(protocol_arg);
+    g_free(name);
+    return success;
+}
+
+static gboolean
+virt_viewer_firewall_update(gboolean enable)
+{
+    if (virt_viewer_firewall_update_com(enable))
+        return TRUE;
+
+    g_message("Windows Firewall COM API failed; falling back to netsh");
+    if (enable) {
+        /* Replace stale rules before adding the fallback rules. */
+        virt_viewer_run_netsh("delete", "TCP");
+        virt_viewer_run_netsh("delete", "UDP");
+        if (!virt_viewer_run_netsh("add", "TCP") ||
+            !virt_viewer_run_netsh("add", "UDP")) {
+            virt_viewer_run_netsh("delete", "TCP");
+            virt_viewer_run_netsh("delete", "UDP");
+            return FALSE;
+        }
+        return TRUE;
+    }
+
+    return virt_viewer_run_netsh("delete", "TCP") &&
+        virt_viewer_run_netsh("delete", "UDP");
+}
+
+static gboolean
+virt_viewer_run_powershell(const gchar *command, GError **error)
+{
+    gchar *argv[] = {
+        (gchar *)"powershell.exe",
+        (gchar *)"-NoLogo",
+        (gchar *)"-NoProfile",
+        (gchar *)"-NonInteractive",
+        (gchar *)"-WindowStyle",
+        (gchar *)"Hidden",
+        (gchar *)"-Command",
+        (gchar *)command,
+        NULL,
+    };
+    gint wait_status = 0;
+    gchar *stderr_output = NULL;
+    gboolean success;
+
+    if (!g_spawn_sync(NULL,
+                      argv,
+                      NULL,
+                      G_SPAWN_SEARCH_PATH |
+                      G_SPAWN_STDOUT_TO_DEV_NULL,
+                      NULL,
+                      NULL,
+                      NULL,
+                      &stderr_output,
+                      &wait_status,
+                      error)) {
+        g_free(stderr_output);
+        return FALSE;
+    }
+
+    /* g_spawn_check_wait_status() requires GLib 2.70, while virt-viewer keeps
+     * compatibility with GLib 2.48. */
+    success = g_spawn_check_exit_status(wait_status, error);
+    if (!success && stderr_output != NULL && *stderr_output != '\0') {
+        g_printerr("PowerShell security command failed: %s\n", stderr_output);
+        OutputDebugStringA("ovworksViewer PowerShell security command failed: ");
+        OutputDebugStringA(stderr_output);
+    }
+    g_free(stderr_output);
+    return success;
+}
+
 static BOOL is_handle_valid(HANDLE h)
 {
     if (h == INVALID_HANDLE_VALUE || h == NULL)
@@ -266,6 +573,51 @@ static BOOL is_handle_valid(HANDLE h)
 void virt_viewer_util_init(const char *appname)
 {
 #ifdef G_OS_WIN32
+    GError *error = NULL;
+
+    if (!virt_viewer_is_elevated()) {
+        DWORD windows_error = ERROR_SUCCESS;
+
+        if (virt_viewer_relaunch_elevated(&windows_error))
+            ExitProcess(EXIT_SUCCESS);
+
+        MessageBoxW(NULL,
+                    windows_error == ERROR_CANCELLED ?
+                    L"Administrator approval was cancelled. ovworksViewer "
+                    L"cannot apply its Windows security policy." :
+                    L"Windows could not relaunch ovworksViewer with "
+                    L"administrator permission.",
+                    L"ovworksViewer security policy",
+                    MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        ExitProcess(EXIT_FAILURE);
+    }
+
+    if (!virt_viewer_firewall_update(TRUE)) {
+        MessageBoxW(NULL,
+                    L"ovworksViewer could not block TCP/UDP 3389 using either "
+                    L"Windows Firewall COM or netsh.",
+                    L"ovworksViewer security policy",
+                    MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        ExitProcess(EXIT_FAILURE);
+    }
+    remote_desktop_firewall_applied = TRUE;
+
+    if (!virt_viewer_run_powershell(disable_remote_desktop_service, &error)) {
+        /* The firewall already blocks new RDP traffic. Some Windows policies
+         * prohibit stopping TermService even for an elevated process, so keep
+         * the stronger reliable boundary and continue with a warning. */
+        virt_viewer_run_powershell(enable_remote_desktop_service, NULL);
+        MessageBoxW(NULL,
+                    L"TCP/UDP 3389 is blocked, but Windows policy did not allow "
+                    L"ovworksViewer to stop TermService. The viewer will "
+                    L"continue with its firewall and display protections.",
+                    L"ovworksViewer security policy",
+                    MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+        g_clear_error(&error);
+    } else {
+        remote_desktop_service_disabled = TRUE;
+    }
+
     /*
      * This named mutex will be kept around by Windows until the
      * process terminates. This allows other instances to check if it
@@ -319,6 +671,38 @@ void virt_viewer_util_init(const char *appname)
     g_set_application_name(appname);
 
     g_log_set_handler(G_LOG_DOMAIN, G_LOG_LEVEL_MASK, log_handler, NULL);
+}
+
+void virt_viewer_util_cleanup(void)
+{
+#ifdef G_OS_WIN32
+    GError *error = NULL;
+    gboolean cleanup_failed = FALSE;
+
+    if (remote_desktop_firewall_applied) {
+        remote_desktop_firewall_applied = FALSE;
+        if (!virt_viewer_firewall_update(FALSE)) {
+            cleanup_failed = TRUE;
+        }
+    }
+
+    if (remote_desktop_service_disabled) {
+        remote_desktop_service_disabled = FALSE;
+        if (!virt_viewer_run_powershell(enable_remote_desktop_service, &error)) {
+            cleanup_failed = TRUE;
+            g_clear_error(&error);
+        }
+    }
+
+    if (cleanup_failed) {
+        MessageBoxW(NULL,
+                    L"ovworksViewer could not remove its TCP/UDP 3389 firewall "
+                    L"rules or restore the Windows Remote Desktop service. Run "
+                    L"the documented recovery commands as administrator.",
+                    L"ovworksViewer security policy",
+                    MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+    }
+#endif
 }
 
 static gchar *
