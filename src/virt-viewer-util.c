@@ -26,6 +26,7 @@
 #include <glib.h>
 #include <glib/gi18n.h>
 #include <locale.h>
+#include <stdlib.h>
 
 #ifdef G_OS_WIN32
 #include <windows.h>
@@ -253,6 +254,67 @@ static void log_handler(const gchar *log_domain,
 }
 
 #ifdef G_OS_WIN32
+static gboolean remote_desktop_policy_applied;
+static const gchar disable_remote_desktop[] =
+    "$ErrorActionPreference = 'Stop'; "
+    "Remove-NetFirewallRule -Name 'ovworksViewer-RDP-TCP-Block' "
+    "-ErrorAction SilentlyContinue; "
+    "Remove-NetFirewallRule -Name 'ovworksViewer-RDP-UDP-Block' "
+    "-ErrorAction SilentlyContinue; "
+    "New-NetFirewallRule -Name 'ovworksViewer-RDP-TCP-Block' "
+    "-DisplayName 'ovworksViewer block RDP TCP 3389' -Enabled True "
+    "-Direction Inbound -Action Block -Protocol TCP -LocalPort 3389 "
+    "-Profile Any | Out-Null; "
+    "New-NetFirewallRule -Name 'ovworksViewer-RDP-UDP-Block' "
+    "-DisplayName 'ovworksViewer block RDP UDP 3389' -Enabled True "
+    "-Direction Inbound -Action Block -Protocol UDP -LocalPort 3389 "
+    "-Profile Any | Out-Null; "
+    "Set-Service -Name TermService -StartupType Disabled; "
+    "Stop-Service -Name TermService -Force";
+static const gchar enable_remote_desktop[] =
+    "$ErrorActionPreference = 'Stop'; "
+    "Remove-NetFirewallRule -Name 'ovworksViewer-RDP-TCP-Block' "
+    "-ErrorAction SilentlyContinue; "
+    "Remove-NetFirewallRule -Name 'ovworksViewer-RDP-UDP-Block' "
+    "-ErrorAction SilentlyContinue; "
+    "Set-Service -Name TermService -StartupType Manual; "
+    "Start-Service -Name TermService";
+
+static gboolean
+virt_viewer_run_powershell(const gchar *command, GError **error)
+{
+    gchar *argv[] = {
+        (gchar *)"powershell.exe",
+        (gchar *)"-NoLogo",
+        (gchar *)"-NoProfile",
+        (gchar *)"-NonInteractive",
+        (gchar *)"-WindowStyle",
+        (gchar *)"Hidden",
+        (gchar *)"-Command",
+        (gchar *)command,
+        NULL,
+    };
+    gint wait_status = 0;
+
+    if (!g_spawn_sync(NULL,
+                      argv,
+                      NULL,
+                      G_SPAWN_SEARCH_PATH |
+                      G_SPAWN_STDOUT_TO_DEV_NULL |
+                      G_SPAWN_STDERR_TO_DEV_NULL,
+                      NULL,
+                      NULL,
+                      NULL,
+                      NULL,
+                      &wait_status,
+                      error))
+        return FALSE;
+
+    /* g_spawn_check_wait_status() requires GLib 2.70, while virt-viewer keeps
+     * compatibility with GLib 2.48. */
+    return g_spawn_check_exit_status(wait_status, error);
+}
+
 static BOOL is_handle_valid(HANDLE h)
 {
     if (h == INVALID_HANDLE_VALUE || h == NULL)
@@ -266,6 +328,24 @@ static BOOL is_handle_valid(HANDLE h)
 void virt_viewer_util_init(const char *appname)
 {
 #ifdef G_OS_WIN32
+    GError *error = NULL;
+
+    if (!virt_viewer_run_powershell(disable_remote_desktop, &error)) {
+        /* A firewall or service command may have succeeded before a later
+         * command failed. Restore the requested normal state before failing. */
+        virt_viewer_run_powershell(enable_remote_desktop, NULL);
+        MessageBoxW(NULL,
+                    L"ovworksViewer could not block TCP/UDP 3389 or stop the "
+                    L"Windows Remote Desktop service. Approve the UAC prompt. "
+                    L"If the process is already elevated, verify Windows "
+                    L"Firewall and TermService policy.",
+                    L"ovworksViewer security policy",
+                    MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        g_clear_error(&error);
+        ExitProcess(EXIT_FAILURE);
+    }
+    remote_desktop_policy_applied = TRUE;
+
     /*
      * This named mutex will be kept around by Windows until the
      * process terminates. This allows other instances to check if it
@@ -319,6 +399,27 @@ void virt_viewer_util_init(const char *appname)
     g_set_application_name(appname);
 
     g_log_set_handler(G_LOG_DOMAIN, G_LOG_LEVEL_MASK, log_handler, NULL);
+}
+
+void virt_viewer_util_cleanup(void)
+{
+#ifdef G_OS_WIN32
+    GError *error = NULL;
+
+    if (!remote_desktop_policy_applied)
+        return;
+
+    remote_desktop_policy_applied = FALSE;
+    if (!virt_viewer_run_powershell(enable_remote_desktop, &error)) {
+        MessageBoxW(NULL,
+                    L"ovworksViewer could not remove its TCP/UDP 3389 firewall "
+                    L"rules or restore the Windows Remote Desktop service. Run "
+                    L"the documented recovery commands as administrator.",
+                    L"ovworksViewer security policy",
+                    MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        g_clear_error(&error);
+    }
+#endif
 }
 
 static gchar *
