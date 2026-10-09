@@ -8,12 +8,12 @@ BEGIN
     BLOCK "040904E4"
     BEGIN
       VALUE "CompanyName", "https://gitlab.com/virt-viewer/virt-viewer"
-      VALUE "FileDescription", "VirtViewer desktop client"
+      VALUE "FileDescription", "ovworksViewer desktop client"
       VALUE "FileVersion", "@VERSION@"
       VALUE "InternalName", "@PACKAGE_STRING@"
       VALUE "LegalCopyright", "Copyright (C) 2007-2013 Red Hat, Inc."
       VALUE "OriginalFilename", "virt-viewer.exe"
-      VALUE "ProductName", "VirtViewer"
+      VALUE "ProductName", "ovworksViewer"
       VALUE "ProductVersion", "@VERSION@"
     END
   END

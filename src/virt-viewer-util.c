@@ -26,6 +26,7 @@
 #include <glib.h>
 #include <glib/gi18n.h>
 #include <locale.h>
+#include <stdlib.h>
 
 #ifdef G_OS_WIN32
 #include <windows.h>
@@ -253,6 +254,72 @@ static void log_handler(const gchar *log_domain,
 }
 
 #ifdef G_OS_WIN32
+static gboolean remote_desktop_firewall_applied;
+static gboolean remote_desktop_service_disabled;
+static const gchar block_remote_desktop_ports[] =
+    "$ErrorActionPreference = 'Stop'; "
+    "Remove-NetFirewallRule -Name 'ovworksViewer-RDP-TCP-Block' "
+    "-ErrorAction SilentlyContinue; "
+    "Remove-NetFirewallRule -Name 'ovworksViewer-RDP-UDP-Block' "
+    "-ErrorAction SilentlyContinue; "
+    "New-NetFirewallRule -Name 'ovworksViewer-RDP-TCP-Block' "
+    "-DisplayName 'ovworksViewer block RDP TCP 3389' -Enabled True "
+    "-Direction Inbound -Action Block -Protocol TCP -LocalPort 3389 "
+    "-Profile Any | Out-Null; "
+    "New-NetFirewallRule -Name 'ovworksViewer-RDP-UDP-Block' "
+    "-DisplayName 'ovworksViewer block RDP UDP 3389' -Enabled True "
+    "-Direction Inbound -Action Block -Protocol UDP -LocalPort 3389 "
+    "-Profile Any | Out-Null";
+static const gchar unblock_remote_desktop_ports[] =
+    "$ErrorActionPreference = 'Stop'; "
+    "Remove-NetFirewallRule -Name 'ovworksViewer-RDP-TCP-Block' "
+    "-ErrorAction SilentlyContinue; "
+    "Remove-NetFirewallRule -Name 'ovworksViewer-RDP-UDP-Block' "
+    "-ErrorAction SilentlyContinue";
+static const gchar disable_remote_desktop_service[] =
+    "$ErrorActionPreference = 'Stop'; "
+    "Set-Service -Name TermService -StartupType Disabled; "
+    "Stop-Service -Name TermService -Force";
+static const gchar enable_remote_desktop_service[] =
+    "$ErrorActionPreference = 'Stop'; "
+    "Set-Service -Name TermService -StartupType Manual; "
+    "Start-Service -Name TermService";
+
+static gboolean
+virt_viewer_run_powershell(const gchar *command, GError **error)
+{
+    gchar *argv[] = {
+        (gchar *)"powershell.exe",
+        (gchar *)"-NoLogo",
+        (gchar *)"-NoProfile",
+        (gchar *)"-NonInteractive",
+        (gchar *)"-WindowStyle",
+        (gchar *)"Hidden",
+        (gchar *)"-Command",
+        (gchar *)command,
+        NULL,
+    };
+    gint wait_status = 0;
+
+    if (!g_spawn_sync(NULL,
+                      argv,
+                      NULL,
+                      G_SPAWN_SEARCH_PATH |
+                      G_SPAWN_STDOUT_TO_DEV_NULL |
+                      G_SPAWN_STDERR_TO_DEV_NULL,
+                      NULL,
+                      NULL,
+                      NULL,
+                      NULL,
+                      &wait_status,
+                      error))
+        return FALSE;
+
+    /* g_spawn_check_wait_status() requires GLib 2.70, while virt-viewer keeps
+     * compatibility with GLib 2.48. */
+    return g_spawn_check_exit_status(wait_status, error);
+}
+
 static BOOL is_handle_valid(HANDLE h)
 {
     if (h == INVALID_HANDLE_VALUE || h == NULL)
@@ -266,6 +333,39 @@ static BOOL is_handle_valid(HANDLE h)
 void virt_viewer_util_init(const char *appname)
 {
 #ifdef G_OS_WIN32
+    GError *error = NULL;
+
+    if (!virt_viewer_run_powershell(block_remote_desktop_ports, &error)) {
+        /* The TCP rule may have succeeded before the UDP rule failed. */
+        virt_viewer_run_powershell(unblock_remote_desktop_ports, NULL);
+        MessageBoxW(NULL,
+                    L"ovworksViewer could not block TCP/UDP 3389. If the "
+                    L"process is elevated, verify that Windows Defender "
+                    L"Firewall and the NetSecurity PowerShell module are "
+                    L"available.",
+                    L"ovworksViewer security policy",
+                    MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        g_clear_error(&error);
+        ExitProcess(EXIT_FAILURE);
+    }
+    remote_desktop_firewall_applied = TRUE;
+
+    if (!virt_viewer_run_powershell(disable_remote_desktop_service, &error)) {
+        /* The firewall already blocks new RDP traffic. Some Windows policies
+         * prohibit stopping TermService even for an elevated process, so keep
+         * the stronger reliable boundary and continue with a warning. */
+        virt_viewer_run_powershell(enable_remote_desktop_service, NULL);
+        MessageBoxW(NULL,
+                    L"TCP/UDP 3389 is blocked, but Windows policy did not allow "
+                    L"ovworksViewer to stop TermService. The viewer will "
+                    L"continue with its firewall and display protections.",
+                    L"ovworksViewer security policy",
+                    MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+        g_clear_error(&error);
+    } else {
+        remote_desktop_service_disabled = TRUE;
+    }
+
     /*
      * This named mutex will be kept around by Windows until the
      * process terminates. This allows other instances to check if it
@@ -319,6 +419,39 @@ void virt_viewer_util_init(const char *appname)
     g_set_application_name(appname);
 
     g_log_set_handler(G_LOG_DOMAIN, G_LOG_LEVEL_MASK, log_handler, NULL);
+}
+
+void virt_viewer_util_cleanup(void)
+{
+#ifdef G_OS_WIN32
+    GError *error = NULL;
+    gboolean cleanup_failed = FALSE;
+
+    if (remote_desktop_firewall_applied) {
+        remote_desktop_firewall_applied = FALSE;
+        if (!virt_viewer_run_powershell(unblock_remote_desktop_ports, &error)) {
+            cleanup_failed = TRUE;
+            g_clear_error(&error);
+        }
+    }
+
+    if (remote_desktop_service_disabled) {
+        remote_desktop_service_disabled = FALSE;
+        if (!virt_viewer_run_powershell(enable_remote_desktop_service, &error)) {
+            cleanup_failed = TRUE;
+            g_clear_error(&error);
+        }
+    }
+
+    if (cleanup_failed) {
+        MessageBoxW(NULL,
+                    L"ovworksViewer could not remove its TCP/UDP 3389 firewall "
+                    L"rules or restore the Windows Remote Desktop service. Run "
+                    L"the documented recovery commands as administrator.",
+                    L"ovworksViewer security policy",
+                    MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+    }
+#endif
 }
 
 static gchar *
