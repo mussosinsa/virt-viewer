@@ -146,6 +146,32 @@ if host_machine.system() == 'windows'
     '-Wl,-e,@0@WinMainCRTStartup'.format(entry_prefix),
     '-mconsole',
   ]
+
+  windres = find_program('windres')
+  runwindres = join_paths(meson.source_root(), 'build-aux', 'run-windres.py')
+
+  rcfile = configure_file(
+    input: 'virt-viewer.rc.in',
+    output: 'virt-viewer.rc',
+    configuration: conf_data
+  )
+
+  rcobj = custom_target(
+    'virt-viewer-rc.o',
+    input: [rcfile, icofile, 'virt-viewer.manifest'],
+    output: ['virt-viewer-rc.o'],
+    command : [
+      python3,
+      runwindres,
+      windres,
+      join_paths(meson.build_root(), 'icons'),
+      meson.current_source_dir(),
+      rcfile,
+      '@OUTPUT@'
+    ])
+
+  virt_viewer_sources += [rcobj]
+  remote_viewer_sources += [rcobj]
 endif
 
 if libvirt_dep.found()
@@ -173,29 +199,6 @@ executable(
 )
 
 if host_machine.system() == 'windows'
-  windres = find_program('windres')
-  runwindres = join_paths(meson.source_root(), 'build-aux', 'run-windres.py')
-
-  rcfile = configure_file(
-    input: 'virt-viewer.rc.in',
-    output: 'virt-viewer.rc',
-    configuration: conf_data
-  )
-
-  rcobj = custom_target(
-    'virt-viewer-rc.o',
-    input: [rcfile, icofile, 'virt-viewer.manifest'],
-    output: ['virt-viewer-rc.o'],
-    command : [
-      python3,
-      runwindres,
-      windres,
-      join_paths(meson.build_root(), 'icons'),
-      meson.current_source_dir(),
-      rcfile,
-      '@OUTPUT@'
-    ])
-
   wrapper_sources = [
     'windows-cmdline-wrapper.c',
     rcobj,
