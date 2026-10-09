@@ -395,6 +395,16 @@ mandir = join_paths(prefix, get_option('mandir'))
 add_global_arguments('-DLOCALE_DIR="@0@"'.format(localedir), language: 'c')
 
 libm_dep = cc.find_library('m', required : true)
+win32_advapi_dep = dependency('', required: false)
+win32_ole32_dep = dependency('', required: false)
+win32_oleaut32_dep = dependency('', required: false)
+win32_uuid_dep = dependency('', required: false)
+if host_machine.system() == 'windows'
+  win32_advapi_dep = cc.find_library('advapi32', required: true)
+  win32_ole32_dep = cc.find_library('ole32', required: true)
+  win32_oleaut32_dep = cc.find_library('oleaut32', required: true)
+  win32_uuid_dep = cc.find_library('uuid', required: true)
+endif
 
 glib_dep = dependency('glib-2.0', version: glib_min_version)
 gmodule_dep = dependency('gmodule-2.0', version: glib_min_version)
