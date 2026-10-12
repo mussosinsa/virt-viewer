@@ -36,10 +36,11 @@ main(int argc, char **argv)
     int ret = 1;
     GApplication *app = NULL;
 
-    virt_viewer_util_init(_("Remote Viewer"));
+    virt_viewer_util_init("ovworksViewer");
     app = G_APPLICATION(remote_viewer_new());
 
     ret = g_application_run(app, argc, argv);
     g_object_unref(app);
+    virt_viewer_util_cleanup();
     return ret;
 }
