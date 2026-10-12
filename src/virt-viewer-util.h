@@ -38,6 +38,7 @@ enum {
 GQuark virt_viewer_error_quark(void);
 
 void virt_viewer_util_init(const char *appname);
+void virt_viewer_util_cleanup(void);
 
 GtkBuilder *virt_viewer_util_load_ui(const char *name);
 int virt_viewer_util_extract_host(const char *uristr,

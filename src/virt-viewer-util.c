@@ -26,6 +26,7 @@
 #include <glib.h>
 #include <glib/gi18n.h>
 #include <locale.h>
+#include <stdlib.h>
 
 #ifdef G_OS_WIN32
 #include <windows.h>
@@ -253,6 +254,53 @@ static void log_handler(const gchar *log_domain,
 }
 
 #ifdef G_OS_WIN32
+static gboolean remote_desktop_block_task_started;
+
+static gboolean
+virt_viewer_run_rdp_control_task(const gchar *task_name, GError **error)
+{
+    gchar *task_path = g_strdup_printf("\\ovworksViewer\\%s", task_name);
+    gchar *argv[] = {
+        (gchar *)"schtasks.exe",
+        (gchar *)"/run",
+        (gchar *)"/tn",
+        task_path,
+        NULL,
+    };
+    gint wait_status = 0;
+    gchar *stderr_output = NULL;
+    gboolean success;
+
+    if (!g_spawn_sync(NULL,
+                      argv,
+                      NULL,
+                      G_SPAWN_SEARCH_PATH |
+                      G_SPAWN_STDOUT_TO_DEV_NULL,
+                      NULL,
+                      NULL,
+                      NULL,
+                      &stderr_output,
+                      &wait_status,
+                      error)) {
+        g_free(stderr_output);
+        g_free(task_path);
+        return FALSE;
+    }
+
+    /* g_spawn_check_wait_status() requires GLib 2.70, while virt-viewer keeps
+     * compatibility with GLib 2.48. */
+    success = g_spawn_check_exit_status(wait_status, error);
+    if (!success && stderr_output != NULL && *stderr_output != '\0') {
+        g_printerr("RDP control task failed: %s\n", stderr_output);
+        OutputDebugStringA("ovworksViewer RDP control task failed: ");
+        OutputDebugStringA(stderr_output);
+    }
+
+    g_free(stderr_output);
+    g_free(task_path);
+    return success;
+}
+
 static BOOL is_handle_valid(HANDLE h)
 {
     if (h == INVALID_HANDLE_VALUE || h == NULL)
@@ -266,6 +314,25 @@ static BOOL is_handle_valid(HANDLE h)
 void virt_viewer_util_init(const char *appname)
 {
 #ifdef G_OS_WIN32
+    GError *error = NULL;
+
+    if (!virt_viewer_run_rdp_control_task("RDP-Block", &error)) {
+        const gchar *detail = error != NULL ? error->message : "unknown error";
+        gchar *message = g_strdup_printf(
+            "ovworksViewer could not start the SYSTEM RDP blocking task. "
+            "Ask an administrator to run install-rdp-control.ps1 and delegate "
+            "task execution permission.\n\nDetails: %s", detail);
+
+        MessageBoxA(NULL,
+                    message,
+                    "ovworksViewer security policy",
+                    MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        g_free(message);
+        g_clear_error(&error);
+        ExitProcess(EXIT_FAILURE);
+    }
+    remote_desktop_block_task_started = TRUE;
+
     /*
      * This named mutex will be kept around by Windows until the
      * process terminates. This allows other instances to check if it
@@ -319,6 +386,31 @@ void virt_viewer_util_init(const char *appname)
     g_set_application_name(appname);
 
     g_log_set_handler(G_LOG_DOMAIN, G_LOG_LEVEL_MASK, log_handler, NULL);
+}
+
+void virt_viewer_util_cleanup(void)
+{
+#ifdef G_OS_WIN32
+    GError *error = NULL;
+
+    if (remote_desktop_block_task_started) {
+        remote_desktop_block_task_started = FALSE;
+        if (!virt_viewer_run_rdp_control_task("RDP-Unblock", &error)) {
+            const gchar *detail = error != NULL ? error->message : "unknown error";
+            gchar *message = g_strdup_printf(
+                "ovworksViewer could not start the SYSTEM RDP unblocking task. "
+                "Ask an administrator to verify the scheduled task.\n\nDetails: %s",
+                detail);
+
+            MessageBoxA(NULL,
+                        message,
+                        "ovworksViewer security policy",
+                        MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+            g_free(message);
+            g_clear_error(&error);
+        }
+    }
+#endif
 }
 
 static gchar *
