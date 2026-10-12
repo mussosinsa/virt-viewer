@@ -122,7 +122,7 @@ remote_viewer_add_option_entries(VirtViewerApp *self, GOptionContext *context, G
     };
 
     VIRT_VIEWER_APP_CLASS(remote_viewer_parent_class)->add_option_entries(self, context, group);
-    g_option_context_set_summary(context, _("Remote viewer client"));
+    g_option_context_set_summary(context, _("ovworksViewer client"));
     g_option_group_add_entries(group, options);
 
 #ifdef HAVE_OVIRT
