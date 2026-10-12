@@ -42,6 +42,21 @@ monitor_alignment_bin = executable(
 test('test-monitor-alignment', monitor_alignment_bin)
 
 
+input_privacy_test = find_program('test-input-privacy.py')
+test(
+  'test-input-privacy',
+  input_privacy_test,
+  args: [meson.source_root()],
+)
+
+windows_security_test = find_program('test-windows-security.py')
+test(
+  'test-windows-security',
+  windows_security_test,
+  args: [meson.source_root()],
+)
+
+
 if host_machine.system() == 'windows'
   redirect_bin = executable(
     'test-redirect',
