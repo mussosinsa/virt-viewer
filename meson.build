@@ -395,7 +395,6 @@ mandir = join_paths(prefix, get_option('mandir'))
 add_global_arguments('-DLOCALE_DIR="@0@"'.format(localedir), language: 'c')
 
 libm_dep = cc.find_library('m', required : true)
-
 glib_dep = dependency('glib-2.0', version: glib_min_version)
 gmodule_dep = dependency('gmodule-2.0', version: glib_min_version)
 gtk_dep = dependency('gtk+-3.0', version: gtk_min_version)
