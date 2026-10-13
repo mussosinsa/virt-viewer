@@ -1,0 +1,158 @@
+#Requires -RunAsAdministrator
+
+param(
+    [string]$AllowedSid = "S-1-5-32-545"
+)
+
+$ErrorActionPreference = "Stop"
+$dir = Join-Path $env:ProgramData "RDPControl"
+$controlScript = Join-Path $dir "RDP-Control.ps1"
+$taskPath = "\"
+
+New-Item -ItemType Directory -Path $dir -Force | Out-Null
+
+$script = @'
+param(
+    [Parameter(Mandatory = $true)]
+    [ValidateSet("Block", "Unblock")]
+    [string]$Action
+)
+
+$ErrorActionPreference = "Stop"
+$rule = "Managed-RDP-3389-Block"
+$ifeoRoot = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
+$blockedImages = @(
+    "TeamViewer.exe",
+    "vncserver.exe",
+    "vncviewer.exe",
+    "winvnc.exe",
+    "tvnserver.exe"
+)
+$blockedProcessNames = $blockedImages | ForEach-Object {
+    [System.IO.Path]::GetFileNameWithoutExtension($_)
+}
+$denyDebugger = Join-Path $env:ProgramData "RDPControl\ovworksViewer-denied.exe"
+
+foreach ($protocol in @("TCP", "UDP")) {
+    $name = "$rule-$protocol"
+    if ($Action -eq "Block") {
+        if (-not (Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule `
+                -Name $name `
+                -DisplayName $name `
+                -Direction Inbound `
+                -Protocol $protocol `
+                -LocalPort 3389 `
+                -Action Block `
+                -Profile Any | Out-Null
+        } else {
+            Enable-NetFirewallRule -Name $name
+        }
+    } else {
+        Disable-NetFirewallRule -Name $name -ErrorAction SilentlyContinue
+    }
+}
+
+if ($Action -eq "Block") {
+    # Stop already-running copies before applying the launch deny entries.
+    Get-Process -Name $blockedProcessNames -ErrorAction SilentlyContinue |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+
+    foreach ($image in $blockedImages) {
+        $imageKey = Join-Path $ifeoRoot $image
+        $existingDebugger = (Get-ItemProperty -LiteralPath $imageKey `
+            -Name "Debugger" -ErrorAction SilentlyContinue).Debugger
+        $managed = (Get-ItemProperty -LiteralPath $imageKey `
+            -Name "ovworksViewerManaged" -ErrorAction SilentlyContinue).ovworksViewerManaged
+
+        if ($existingDebugger -and
+            ($existingDebugger -ne $denyDebugger -or $managed -ne 1)) {
+            throw "Refusing to replace an unmanaged IFEO Debugger for $image"
+        }
+
+        New-Item -Path $imageKey -Force | Out-Null
+        New-ItemProperty -LiteralPath $imageKey -Name "Debugger" `
+            -Value $denyDebugger -PropertyType String -Force | Out-Null
+        New-ItemProperty -LiteralPath $imageKey -Name "ovworksViewerManaged" `
+            -Value 1 -PropertyType DWord -Force | Out-Null
+    }
+} else {
+    foreach ($image in $blockedImages) {
+        $imageKey = Join-Path $ifeoRoot $image
+        $managed = (Get-ItemProperty -LiteralPath $imageKey `
+            -Name "ovworksViewerManaged" -ErrorAction SilentlyContinue).ovworksViewerManaged
+        $existingDebugger = (Get-ItemProperty -LiteralPath $imageKey `
+            -Name "Debugger" -ErrorAction SilentlyContinue).Debugger
+
+        # Remove only values created by this script; preserve administrator or
+        # third-party IFEO policy present before ovworksViewer started.
+        if ($managed -eq 1 -and $existingDebugger -eq $denyDebugger) {
+            Remove-ItemProperty -LiteralPath $imageKey -Name "Debugger" `
+                -ErrorAction SilentlyContinue
+            Remove-ItemProperty -LiteralPath $imageKey -Name "ovworksViewerManaged" `
+                -ErrorAction SilentlyContinue
+        }
+    }
+}
+'@
+
+Set-Content -LiteralPath $controlScript -Value $script -Encoding UTF8
+
+# Only SYSTEM and Administrators may modify the directory. Built-in Users get
+# read/execute access so Task Scheduler can validate delegated task callers.
+& icacls.exe $dir /inheritance:r | Out-Null
+& icacls.exe $dir /grant:r `
+    "*S-1-5-18:(OI)(CI)F" `
+    "*S-1-5-32-544:(OI)(CI)F" `
+    "*${AllowedSid}:(OI)(CI)RX" | Out-Null
+
+$powershell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+foreach ($mode in @("Block", "Unblock")) {
+    $action = New-ScheduledTaskAction `
+        -Execute $powershell `
+        -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$controlScript`" -Action $mode"
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId "SYSTEM" `
+        -LogonType ServiceAccount `
+        -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 1)
+
+    Register-ScheduledTask `
+        -TaskName "RDP-$mode" `
+        -TaskPath $taskPath `
+        -Action $action `
+        -Principal $principal `
+        -Settings $settings `
+        -Force | Out-Null
+}
+
+# Register-ScheduledTask does not expose a task DACL. Delegate read/execute,
+# but not modification, to the configured local group (Built-in Users by
+# default). Keep the tasks in the Task Scheduler root, which standard users can
+# traverse; a protected custom task folder can cause schtasks.exe /run to fail
+# before it evaluates the individual task DACL.
+$taskService = New-Object -ComObject "Schedule.Service"
+$taskService.Connect()
+$taskFolder = $taskService.GetFolder($taskPath)
+$taskSddl = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGX;;;$AllowedSid)"
+foreach ($mode in @("Block", "Unblock")) {
+    $taskFolder.GetTask("RDP-$mode").SetSecurityDescriptor($taskSddl, 0)
+}
+
+# Remove tasks created by versions that used a protected \ovworksViewer folder.
+# Ignore failures because the folder may not exist or may still contain an
+# administrator-managed object.
+foreach ($mode in @("Block", "Unblock")) {
+    Unregister-ScheduledTask -TaskName "RDP-$mode" -TaskPath "\ovworksViewer\" `
+        -Confirm:$false -ErrorAction SilentlyContinue
+}
+try {
+    $taskService.GetFolder("\").DeleteFolder("ovworksViewer", 0)
+} catch {
+    # Migration cleanup is best effort.
+}
+
+Write-Host "Installed SYSTEM RDP control tasks and delegated execution to $AllowedSid."
